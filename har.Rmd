@@ -1,0 +1,153 @@
+---
+title: "HAR ML Modeling"
+author: "Shabbir Suterwala"
+date: "Sunday, December 21, 2014"
+output: html_document
+---
+
+# Predictive Modeling for Human Activity Recognition (HAR)
+**Shabbir Suterwala**
+
+## Executive Summary
+The purpose of this exercise it to predict whether if people are performing Biceps Curl exercises properly. Using the Weight Lifting Exercises Dataset available at http://groupware.les.inf.puc-rio.br/har, a prediction model based on Random Forest is trained and tested with 98% and 100% accuracies respectively. The dataset is captured using various devices such as Jawbone Up, Nike FuelBand, and Fitbit and are worn by the subjects when performing the exercise.
+
+## Data Loading and Cleaning
+The training and testing data was downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv and https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv respectively. Training data was analyzed and cleaned as follows:
+
+   1. All columns that had  > 95% NA values were discarded. There were 100 such columns.
+   2. The following columns were removed:
+      + X: This contained the row number and is sot useful for prediction
+      + user_name: This contained the subject names and is not useful for prediction
+      + raw_timestamp_part_1/raw_timestamp_part_2: These were redundant due to cvtd_timestamp
+      + new_window: It had near zero variation
+
+After cleaning as above, there were no columns that had any NA.
+
+```{r, echo=TRUE, cache=TRUE}
+library(caret)
+load <- function() {
+    pml <- read.csv("pml-training.csv", na.strings=c("#DIV/0!", "NA", ""))
+    pml$cvtd_timestamp <- as.numeric(strptime(pml$cvtd_timestamp, format="%d/%m/%Y %H:%M"))
+    
+    #### Convert no(=1) / yes(=2) to 0/1
+    pml$new_window <- as.integer(pml$new_window) - 1
+    
+    ##### Remove unwanted columns and those with at least 95% NA values ############    
+    pml.unwanted <- names(pml)[sapply(pml, function(x) sum(is.na(x))/length(x)) > 0.95]
+    
+    #The following variables are also removed:
+    #X: Just a row number
+    #user_name: Is the name of the subject. This info is not important and will introduce a bias if used.
+    #raw_timestamp_part_1/raw_timestamp_part_2: Contained in cvtd_timestamp
+    #new_window: it was nearzero
+    pml.unwanted <- c(pml.unwanted, c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2"))
+    pml <- pml[, setdiff(names(pml), pml.unwanted)]
+
+    #remove near zero values
+    nzv <- nearZeroVar(pml, saveMetrics=F)
+    pml <- pml[, -nzv]
+    
+    ###### Build Train and Test Sets ##################
+    set.seed(3333)
+    inTrain <- createDataPartition(pml$classe, p=.75, list=FALSE)
+    train.data <- pml[inTrain, ]
+    test.data <- pml[-inTrain, ]
+    
+    ######### Checking if any factor variables are left ##########
+    #train.types <- sapply(train.data, class)
+    #train.types.factor <- train.types[train.types == "factor"]
+    #print(train.types.factor)
+    
+    ######## return the list #################
+    list(pml=pml, train.data=train.data, test.data=test.data)
+} 
+
+pml.data <- load()
+```
+
+There are `r ncol(pml.data$pml)` variables in the cleaned dataset
+
+## Data Modeling
+
+Three predictive models were built (details below). Each model was cross validated with testing data that was extracted and set aside from the training data. The actual testing was used only when the final model was ready. 
+
+### Linear Discriminant Analysis Model
+
+```{r, echo=TRUE, cache=TRUE}
+
+doLDA <- function (pml.data, method="lda") {
+    set.seed(4545)
+
+    ppo <- trainControl()$preProcOptions
+    ppo$thresh = 0.975
+    trc <- trainControl(preProcOptions=ppo)
+    
+    model <- train(classe ~ ., data=pml.data$train.data, method=method, preProcess = "pca", trControl = trc)
+    pred <-  predict(model, pml.data$test.data)
+    conf.mx <- confusionMatrix(pred, pml.data$test.data[, ncol(pml.data$test.data)])
+    modelFit <- list(model = model, pred = pred, conf.mx=conf.mx)        
+}
+
+start.tm <- proc.time()
+lda.modelFit <- doLDA(pml.data, "lda")
+cfx <- lda.modelFit$conf.mx
+cfx
+proc.time() - start.tm
+```
+
+LDA's out of sample error rate (1 - Accuracy) is `r 100 * (1 - round(cfx$overall[1], 4))`%
+
+### Random Forest with bootstrap sampling
+```{r, echo=TRUE, cache=TRUE}
+doRF <- function(pml.data, method="boot") {
+    set.seed(4444)
+    
+    #preproc <- preProcess(train.data[, -ncol(train.data)], method="pca", thresh = 0.975)
+    ppo <- trainControl()$preProcOptions
+    ppo$thresh = 0.975
+    trc <- trainControl(method=method, number=5, preProcOptions=ppo)
+    
+    rf.model <- train(classe ~ ., data=pml.data$train.data, method="rf", preProcess = "pca", trControl = trc)
+    rf.pred <- predict(rf.model, pml.data$test.data)
+    conf.mx <- confusionMatrix(rf.pred, pml.data$test.data[, ncol(pml.data$test.data)])
+    rf.modelFit <- list(model = rf.model, pred = rf.pred, conf.mx=conf.mx)
+    
+}
+
+if (!exists("rf.modelFit.boot")) {
+    start.tm <- proc.time()
+    rf.modelFit.boot <- doRF(pml.data, "boot")
+    proc.time() - start.tm
+}
+cfx <- rf.modelFit.boot$conf.mx
+cfx
+```
+Random Forest with bootstraping's out of sample error rate (1 - Accuracy) is `r 100 * (1 - round(cfx$overall[1], 4))`%
+
+### Random Forest with cross validation
+```{r, echo=TRUE, cache=TRUE}
+#### Using RF with method CV #################
+if (!exists("rf.modelFit.cv")) {
+    start.tm <- proc.time()
+    rf.modelFit.cv <- doRF(pml.data, "cv")
+    proc.time() - start.tm
+}
+cfx <- rf.modelFit.cv$conf.mx
+cfx
+```
+Random Forest with cross validation's out of sample error rate (1 - Accuracy) is `r 100 * (1 - round(cfx$overall[1], 4))`%
+
+## Final Model
+From the above confusion matrix outputs, we can see that Random Forest based models are far superior; not only do they give better accuracy, the kappa is high too. The Random Forest with cross validation has a slighly lower out of sample error, so we will select this model.
+
+## Test Execution
+Execution of selected model against the test data yeilded 100% accurate results. The results of this execution is not provided in this report since doing that may voilate Coursera.org's honor code.
+
+# Conclusion
+A prediction model based on Random Forest alogrithm was built that indicates with 98% accuracy whether someone is performing the Biceps Curl exercise properly or not. The alogrithm was tested on test data and provided 100% accurate results.
+
+
+# References
+   1. http://groupware.les.inf.puc-rio.br/har
+   2. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+ 
